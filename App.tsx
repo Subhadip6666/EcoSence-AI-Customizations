@@ -14,7 +14,10 @@ interface ActionLog {
   type: 'INFO' | 'SUCCESS' | 'WARNING';
 }
 
+const MAX_COOLDOWN = 90;
+
 function App() {
+  const [isSystemInitialized, setIsSystemInitialized] = useState(false);
   const [rooms, setRooms] = useState<RoomData[]>(INITIAL_ROOMS);
   const [analyzingIds, setAnalyzingIds] = useState<Set<string>>(new Set());
   const [energyHistory, setEnergyHistory] = useState<EnergyStats[]>([]);
@@ -79,14 +82,16 @@ function App() {
       });
     }
     setEnergyHistory(history);
-    addLog('System', 'EcoSense Grid Node Connected', 'SUCCESS');
-  }, [addLog]);
+  }, []);
 
   useEffect(() => {
-    updateEnergyTelemetry();
-    energyTickerRef.current = window.setInterval(updateEnergyTelemetry, 5000);
+    if (isSystemInitialized) {
+      addLog('System', 'EcoSense Grid Node Connected', 'SUCCESS');
+      updateEnergyTelemetry();
+      energyTickerRef.current = window.setInterval(updateEnergyTelemetry, 5000);
+    }
     return () => { if (energyTickerRef.current) clearInterval(energyTickerRef.current); };
-  }, [updateEnergyTelemetry]);
+  }, [isSystemInitialized, updateEnergyTelemetry, addLog]);
 
   const handleAnalyze = async (roomId: string) => {
     const room = rooms.find(r => r.id === roomId);
@@ -96,21 +101,27 @@ function App() {
     
     try {
       let result;
+      let method: 'AI' | 'LOCAL' = 'AI';
+
       if (quotaExceeded) {
-        // Strict Fallback Logic
+        method = 'LOCAL';
         await new Promise(r => setTimeout(r, 1500)); 
         const isOccupied = Math.random() > 0.4;
         const temp = room.temperature;
+        
+        // Strict Local Control Logic:
+        // AC remains OFF if temp between 24 and 26. AC only ON if temp > 26 and room is occupied.
+        const shouldACBeOn = isOccupied && temp > 26;
+        const shouldFanBeOn = isOccupied && temp >= 24 && temp <= 26;
         
         result = {
           occupied: isOccupied,
           personCount: isOccupied ? Math.floor(Math.random() * 20) + 1 : 0,
           lightRecommendation: (isOccupied && room.brightness < 60) ? 'ON' as const : 'OFF' as const,
-          // If Temp > 26: AC ON, Fan OFF. 24-26: AC OFF, Fan Speed 4. < 24: Both OFF.
-          acRecommendation: (isOccupied && temp > 26) ? 'ON' as const : 'OFF' as const,
-          fanRecommendation: (isOccupied && temp >= 24 && temp <= 26) ? 'ON' as const : 'OFF' as const,
-          fanSpeed: (isOccupied && temp >= 24 && temp <= 26) ? 4 : 0,
-          targetTemp: 23
+          acRecommendation: shouldACBeOn ? 'ON' as const : 'OFF' as const,
+          fanRecommendation: shouldFanBeOn ? 'ON' as const : 'OFF' as const,
+          fanSpeed: shouldFanBeOn ? 4 : 0,
+          targetTemp: 23 // Target temperature is 23°C as per requirement
         };
       } else {
         let source = room.imageUrl;
@@ -134,13 +145,17 @@ function App() {
             return d;
           });
 
+          // Set target temperature to 23°C if AC is turned ON
+          const newTemperature = result.acRecommendation === 'ON' ? 23 : r.temperature;
+
           return {
             ...r,
             status: result.occupied ? RoomStatus.OCCUPIED : RoomStatus.EMPTY,
             occupancyCount: result.personCount,
-            temperature: result.acRecommendation === 'ON' ? result.targetTemp : r.temperature,
+            temperature: newTemperature,
             devices: updatedDevices,
             lastUpdate: new Date().toISOString(),
+            auditMethod: method,
           };
         }
         return r;
@@ -149,14 +164,14 @@ function App() {
       if (!result.occupied && room.devices.some(d => d.isOn)) {
         const energySaved = room.devices.reduce((acc, d) => acc + (d.isOn ? d.powerConsumption : 0), 0) / 1000;
         setTotalSaved(s => s + energySaved * 0.1);
-        addLog(room.name, `Eco-Lock: Node Secure. High-Power Assets Terminated.`, 'SUCCESS');
+        addLog(room.name, `Eco-Lock: Node Secure. Assets Terminated.`, 'SUCCESS');
       } else if (result.occupied) {
-        addLog(room.name, `Optimized: ${result.personCount} Detected. Temp: ${room.temperature}°C.`, 'INFO');
+        addLog(room.name, `${method === 'AI' ? 'AI Optimized' : 'Edge Optimized'}: ${result.personCount} Detected.`, 'INFO');
       }
     } catch (err: any) {
       if (err.message?.includes('429')) {
         setQuotaExceeded(true);
-        setCooldownSeconds(90);
+        setCooldownSeconds(MAX_COOLDOWN);
         addLog('System', 'Traffic Warning: Local Override Active', 'WARNING');
         if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
         cooldownTimerRef.current = window.setInterval(() => {
@@ -180,7 +195,7 @@ function App() {
   };
 
   useEffect(() => {
-    if (autoDetection) {
+    if (autoDetection && isSystemInitialized) {
       const cycleInterval = 15000;
       const cycleRooms = () => {
         setRooms(currentRooms => {
@@ -200,10 +215,54 @@ function App() {
       if (autoDetectTimerRef.current) clearInterval(autoDetectTimerRef.current);
     }
     return () => { if (autoDetectTimerRef.current) clearInterval(autoDetectTimerRef.current); };
-  }, [autoDetection, quotaExceeded]);
+  }, [autoDetection, quotaExceeded, isSystemInitialized]);
 
   const totalCurrentConsumption = rooms.reduce((acc, room) => acc + room.devices.reduce((dAcc, d) => dAcc + (d.isOn ? d.powerConsumption : 0), 0), 0);
   const cctvRoom = rooms.find(r => r.id === cctvRoomId);
+
+  if (!isSystemInitialized) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 font-sans">
+        <div className="max-w-xl w-full text-center space-y-12 animate-in fade-in zoom-in-95 duration-1000">
+          <div className="relative inline-block">
+            <div className="w-24 h-24 bg-blue-600 rounded-[2rem] flex items-center justify-center text-white shadow-[0_0_50px_rgba(37,99,235,0.4)] mx-auto relative z-10">
+              <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z"/><path d="M2 21c0-3 1.85-5.36 5.08-6C10 14.5 10.5 13.5 10.5 11"/></svg>
+            </div>
+            <div className="absolute inset-0 bg-blue-500 blur-3xl opacity-20 animate-pulse"></div>
+          </div>
+          
+          <div className="space-y-4">
+            <h1 className="text-4xl font-black text-white uppercase tracking-tighter">EcoSense <span className="text-blue-500">Grid v2.0</span></h1>
+            <p className="text-slate-500 text-sm font-bold uppercase tracking-[0.3em]">Industrial AI Asset Management</p>
+          </div>
+
+          <div className="bg-slate-900/50 border border-slate-800 p-8 rounded-[3rem] space-y-8 shadow-2xl backdrop-blur-xl">
+            <p className="text-slate-400 text-xs font-medium leading-relaxed uppercase tracking-widest">
+              System requires immediate <span className="text-blue-400">Vision Node Authorization</span> to calibrate the occupancy detection grid.
+            </p>
+            
+            <button 
+              onClick={() => setIsSystemInitialized(true)}
+              className="w-full bg-white text-slate-950 font-black uppercase tracking-[0.2em] py-5 rounded-2xl hover:bg-blue-50 transition-all shadow-xl active:scale-[0.98] flex items-center justify-center gap-4 group"
+            >
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-600 group-hover:animate-ping"></span>
+              Initialize Grid Vision
+            </button>
+
+            <div className="grid grid-cols-3 gap-4">
+               {['NODE_AUTH', 'AI_LINK', 'GRID_SYNC'].map(label => (
+                 <div key={label} className="text-[8px] font-black text-slate-700 tracking-widest uppercase py-2 border border-slate-800 rounded-lg">
+                   {label}
+                 </div>
+               ))}
+            </div>
+          </div>
+
+          <p className="text-slate-700 text-[9px] font-black uppercase tracking-widest">Distributed Core &copy; 2025 EcoSense Systems</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`min-h-screen transition-colors duration-500 flex flex-col font-sans selection:bg-blue-100 selection:text-blue-900 ${isDarkMode ? 'bg-slate-950 text-slate-100' : 'bg-[#f8fafc] text-slate-900'}`}>
@@ -254,14 +313,27 @@ function App() {
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 md:p-10 space-y-12">
         {quotaExceeded && (
-          <div className="bg-amber-600 text-white p-5 rounded-[2rem] shadow-2xl border border-amber-500 flex items-center justify-between animate-in fade-in slide-in-from-top-4">
-            <div className="flex items-center gap-5">
-              <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+          <div className="bg-amber-600 text-white p-6 rounded-[2.5rem] shadow-[0_20px_60px_rgba(217,119,6,0.3)] border border-amber-500 relative overflow-hidden animate-in fade-in slide-in-from-top-4">
+            <div className="absolute bottom-0 left-0 h-1.5 bg-white/30 transition-all duration-1000" style={{ width: `${(cooldownSeconds / MAX_COOLDOWN) * 100}%` }}></div>
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-6 relative z-10">
+              <div className="flex items-center gap-6">
+                <div className="w-16 h-16 rounded-[1.5rem] bg-white/20 flex items-center justify-center shadow-lg border border-white/10 shrink-0">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                </div>
+                <div>
+                  <div className="flex items-center gap-3 mb-1">
+                    <p className="text-lg font-black uppercase tracking-tight leading-none">AI Traffic Congestion</p>
+                    <span className="bg-white/20 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest border border-white/20 animate-pulse">Local Override Active</span>
+                  </div>
+                  <p className="text-xs font-bold opacity-90 max-w-xl">
+                    The Gemini AI brain is cooling down. EcoSense has switched to 
+                    <span className="bg-amber-700/50 px-1.5 rounded mx-1">Safe Edge Mode</span>.
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-base font-black uppercase tracking-tight leading-none mb-1.5">Traffic Congestion: Local Override</p>
-                <p className="text-xs font-bold opacity-90">Hardware-level logic active for {cooldownSeconds}s until API restores.</p>
+              <div className="text-center sm:text-right shrink-0">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-80 mb-1">Restoring AI In</p>
+                <p className="text-3xl font-black tabular-nums tracking-tighter leading-none">{cooldownSeconds}<span className="text-sm ml-1 opacity-70">S</span></p>
               </div>
             </div>
           </div>
@@ -309,9 +381,9 @@ function App() {
               
               <div className="mt-8 grid grid-cols-2 sm:grid-cols-4 gap-6 relative z-10">
                 <CCTVStat isDark={isDarkMode} label="Audit Status" value={autoDetection ? 'CYCLING' : 'IDLE'} sub="Scan Mode" />
-                <CCTVStat isDark={isDarkMode} label="AI Compute" value={quotaExceeded ? 'HARDWARE' : 'GEMINI'} sub="Decision Hub" />
+                <CCTVStat isDark={isDarkMode} label="AI Compute" value={quotaExceeded ? 'EDGE' : 'CLOUD'} sub="Engine" />
                 <CCTVStat isDark={isDarkMode} label="Density" value={cctvRoom?.occupancyCount.toString() || '0'} sub="Occupants" />
-                <CCTVStat isDark={isDarkMode} label="Link Status" value="100%" sub="Node Ping" />
+                <CCTVStat isDark={isDarkMode} label="Stability" value={quotaExceeded ? '92%' : '100%'} sub="API Health" />
               </div>
             </div>
           </div>
@@ -321,7 +393,7 @@ function App() {
               <div className="absolute top-0 right-0 w-32 h-32 bg-blue-600/10 blur-[80px] pointer-events-none"></div>
               <div className="flex items-center justify-between mb-8 border-b border-slate-800 pb-6 relative z-10">
                 <span className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] flex items-center gap-3">
-                  <span className={`w-2.5 h-2.5 rounded-full ${quotaExceeded ? 'bg-amber-500' : 'bg-blue-500'} animate-pulse`}></span>
+                  <span className={`w-2.5 h-2.5 rounded-full ${quotaExceeded ? 'bg-amber-500 animate-pulse' : 'bg-blue-500'} `}></span>
                   Grid Event Stream
                 </span>
                 <span className="text-[10px] text-slate-600 uppercase font-black">Live</span>
@@ -387,15 +459,11 @@ function App() {
                     </span>
                     <span className={`text-xl font-black uppercase tracking-widest ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>kWh</span>
                   </div>
-                  <p className="text-[12px] text-emerald-600 font-black uppercase mt-6 flex items-center justify-center md:justify-start gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
-                    Grid Efficiency Rating A+
-                  </p>
                 </div>
                 
                 <div className="flex flex-col items-center gap-5">
                   <div className={`w-full max-w-[320px] p-8 rounded-[2.5rem] border shadow-2xl flex items-center gap-6 group/box transition-all hover:scale-[1.03] ${isDarkMode ? 'bg-slate-950 border-slate-800 hover:shadow-blue-500/5' : 'bg-slate-900 border-slate-800 hover:shadow-blue-500/10'}`}>
-                    <div className="w-16 h-16 rounded-3xl bg-emerald-500/10 flex items-center justify-center text-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.15)] ring-1 ring-emerald-500/20">
+                    <div className="w-16 h-16 rounded-3xl bg-emerald-500/10 flex items-center justify-center text-emerald-500">
                       <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v10"/><path d="M18.4 4.6a9 9 0 1 1-12.8 0"/></svg>
                     </div>
                     <div>
@@ -423,10 +491,10 @@ function App() {
              <div className="w-12 h-12 bg-slate-900 rounded-2xl flex items-center justify-center text-white font-black shadow-2xl ring-1 ring-slate-800">ES</div>
              <span className={`text-xl tracking-tighter font-black transition-colors ${isDarkMode ? 'text-slate-100' : 'text-slate-900'}`}>EcoSense AI</span>
           </div>
-          <p className="text-center md:text-left max-w-sm font-bold opacity-70">Distributed Infrastructure Management powered by Google Gemini Multi-Modal Logic.</p>
+          <p className="text-center md:text-left max-w-sm font-bold opacity-70">Infrastructure powered by Gemini Logic.</p>
           <div className="flex gap-12">
-            <a href="#" className="hover:text-blue-600 transition-colors">Safety Protocols</a>
-            <a href="#" className="hover:text-blue-600 transition-colors">API Console</a>
+            <a href="#" className="hover:text-blue-600 transition-colors">Safety</a>
+            <a href="#" className="hover:text-blue-600 transition-colors">Console</a>
           </div>
         </div>
       </footer>

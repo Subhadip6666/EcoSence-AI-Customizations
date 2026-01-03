@@ -12,134 +12,106 @@ export const WebcamMonitor: React.FC<WebcamMonitorProps> = ({ isActive, isProces
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const [error, setError] = useState<{title: string, message: string} | null>(null);
-  const [permissionState, setPermissionState] = useState<'prompt' | 'granted' | 'denied'>('prompt');
+  const [error, setError] = useState<{title: string, message: string, type: string} | null>(null);
+  const [isInitializing, setIsInitializing] = useState(false);
+  const [isReady, setIsReady] = useState(false);
 
+  // Core initialization logic
   useEffect(() => {
-    if (isActive && permissionState === 'granted') {
-      startCamera();
-    } else if (!isActive) {
-      stopCamera();
-    }
-    return () => stopCamera();
-  }, [isActive, permissionState]);
-
-  const startCamera = async () => {
-    setError(null);
-    try {
-      // Requesting Ultra HD (4K) constraints to get the highest possible hardware resolution
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          facingMode: 'environment', 
-          width: { ideal: 3840, min: 1280 }, 
-          height: { ideal: 2160, min: 720 },
-          frameRate: { ideal: 30 }
-        }, 
-        audio: false 
-      });
-      setStream(mediaStream);
-      setPermissionState('granted');
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-      }
-    } catch (err: any) {
-      console.error("Error accessing webcam:", err);
-      
-      let errorData = {
-        title: "Link Error",
-        message: "Unable to establish video uplink. Please check hardware connection."
+    if (isActive) {
+      const startCamera = async () => {
+        setError(null);
+        setIsInitializing(true);
+        setIsReady(false);
+        
+        try {
+          // Requesting ultra-high fidelity constraints for maximum detail extraction
+          const mediaStream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+              facingMode: 'environment',
+              width: { ideal: 3840, min: 1280 }, // Requesting 4K with 720p as baseline
+              height: { ideal: 2160, min: 720 },
+              frameRate: { ideal: 60, min: 30 }  // Requesting high frame rate for fluid HUD motion
+            }, 
+            audio: false 
+          });
+          
+          setStream(mediaStream);
+        } catch (err: any) {
+          console.error("Camera access failed:", err);
+          setError({
+            title: "Uplink Error",
+            message: err.name === 'NotAllowedError' ? "Permission denied. Check browser settings." : "Hardware not responding or busy.",
+            type: 'hardware'
+          });
+        } finally {
+          setIsInitializing(false);
+        }
       };
-
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setPermissionState('denied');
-        errorData = {
-          title: "Access Restricted",
-          message: "Camera permission denied. The AI Vision system requires visual input to function. Please enable camera access in browser settings."
-        };
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        errorData = {
-          title: "Hardware Missing",
-          message: "No imaging device detected. Ensure a compatible camera is connected to the grid node."
-        };
-      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-        errorData = {
-          title: "Node Conflict",
-          message: "The camera is currently reserved by another process. Please close other applications using the video feed."
-        };
+      startCamera();
+    } else {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        setStream(null);
+        setIsReady(false);
       }
-
-      setError(errorData);
     }
-  };
+    return () => {
+      if (stream) stream.getTracks().forEach(track => track.stop());
+    };
+  }, [isActive]);
 
-  const handleRequestPermission = () => {
-    setPermissionState('granted'); 
-    startCamera();
-  };
-
-  const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
+  // Stream-to-Video attachment watchdog
+  useEffect(() => {
+    if (stream && videoRef.current) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(e => console.warn("Auto-play interrupted:", e));
     }
-  };
+  }, [stream]);
 
+  // Capture utility
   useEffect(() => {
     (window as any).captureCCTVFrame = () => {
-      if (videoRef.current && canvasRef.current && stream) {
+      if (videoRef.current && canvasRef.current && stream && isReady) {
         const video = videoRef.current;
         const canvas = canvasRef.current;
-        
-        // Use intrinsic video resolution for the canvas to maintain 1:1 pixel quality
+        // Use intrinsic video dimensions for maximum capture resolution
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
-        
         const ctx = canvas.getContext('2d', { alpha: false });
         if (ctx) {
-          // Improve image smoothing for high-res captures
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = 'high';
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          
-          // Use high quality (0.95) to preserve details for the AI model
+          // High quality JPEG for AI ingestion
           return canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
         }
       }
       return null;
     };
-  }, [stream]);
+  }, [stream, isReady]);
 
   if (!isActive) return null;
 
   return (
-    <div className="relative w-full aspect-video bg-slate-950 rounded-[2.5rem] overflow-hidden border border-slate-800 shadow-2xl group flex flex-col items-center justify-center">
+    <div className="relative w-full aspect-video bg-slate-950 rounded-[2.5rem] overflow-hidden border border-slate-800 shadow-2xl flex flex-col items-center justify-center group">
       {(!stream || error) ? (
-        <div className="flex flex-col items-center gap-6 p-8 text-center max-w-md animate-in fade-in zoom-in-95 duration-500">
-          <div className={`w-20 h-20 rounded-[2rem] flex items-center justify-center mb-2 transition-colors duration-500 ${error ? 'bg-red-500/10 text-red-500' : 'bg-slate-900 text-slate-500'}`}>
-            {error ? (
-              <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <div className="flex flex-col items-center gap-6 p-10 text-center animate-in fade-in zoom-in-95 duration-500">
+          <div className={`w-20 h-20 rounded-[1.8rem] flex items-center justify-center transition-all ${error ? 'bg-red-500/10 text-red-500' : 'bg-slate-900 text-slate-700'}`}>
+            {isInitializing ? (
+              <div className="w-8 h-8 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin"></div>
             ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
+              </svg>
             )}
           </div>
-          <div className="space-y-3">
-            <h4 className={`font-black uppercase tracking-[0.2em] text-sm ${error ? 'text-red-400' : 'text-white'}`}>
-              {error ? error.title : 'CCTV Feed Authorization'}
+          <div className="space-y-2">
+            <h4 className="font-black uppercase tracking-widest text-[11px] text-slate-400">
+              {error ? error.title : 'Vision Initialization'}
             </h4>
-            <p className="text-slate-500 text-xs font-medium leading-relaxed">
-              {error ? error.message : 'Establish a secure video uplink for real-time occupancy monitoring and AI grid optimization.'}
+            <p className="text-slate-600 text-[9px] font-bold max-w-[200px] leading-relaxed uppercase tracking-tighter">
+              {error ? error.message : 'Establishing high-definition visual telemetry uplink...'}
             </p>
           </div>
-          <button 
-            onClick={handleRequestPermission}
-            className={`mt-4 w-full sm:w-auto text-[11px] font-black uppercase tracking-[0.2em] px-10 py-4 rounded-2xl transition-all shadow-xl active:scale-95 ${
-              error 
-                ? 'bg-white text-slate-900 hover:bg-slate-100' 
-                : 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-900/40'
-            }`}
-          >
-            {error ? 'Attempt System Re-Link' : 'Initialize Feed'}
-          </button>
         </div>
       ) : (
         <>
@@ -148,70 +120,105 @@ export const WebcamMonitor: React.FC<WebcamMonitorProps> = ({ isActive, isProces
             autoPlay 
             playsInline 
             muted
-            className={`w-full h-full object-cover grayscale brightness-[0.55] contrast-[1.3] transition-all duration-700 ${isProcessing ? 'blur-[2px] scale-[1.02]' : ''}`}
+            onPlaying={() => setIsReady(true)}
+            className={`w-full h-full object-cover transition-all duration-1000 grayscale ${isReady ? 'opacity-100' : 'opacity-0'} ${
+              isProcessing 
+                ? 'brightness-[0.7] contrast-[1.4] blur-[2px]' 
+                : 'brightness-[0.7] contrast-[1.3]'
+            }`}
           />
           
-          {/* Scanning Line */}
-          {isProcessing && (
-            <div className="absolute inset-0 pointer-events-none z-30">
-              <div className="absolute left-0 w-full h-[2px] bg-blue-500 shadow-[0_0_20px_#3b82f6,0_0_40px_#3b82f6] animate-scan"></div>
-              <div className="absolute inset-0 bg-blue-500/5 animate-pulse"></div>
-            </div>
-          )}
+          {isReady && (
+            <>
+              {/* Decorative Frame Corners */}
+              <div className="absolute inset-4 border border-white/5 rounded-[2rem] pointer-events-none z-10">
+                <div className="absolute top-0 left-0 w-12 h-12 border-t-2 border-l-2 border-blue-500/40 rounded-tl-3xl"></div>
+                <div className="absolute top-0 right-0 w-12 h-12 border-t-2 border-r-2 border-blue-500/40 rounded-tr-3xl"></div>
+                <div className="absolute bottom-0 left-0 w-12 h-12 border-b-2 border-l-2 border-blue-500/40 rounded-bl-3xl"></div>
+                <div className="absolute bottom-0 right-0 w-12 h-12 border-b-2 border-r-2 border-blue-500/40 rounded-br-3xl"></div>
+              </div>
 
-          {/* Digital Grid */}
-          <div className="absolute inset-0 pointer-events-none opacity-10 animate-grid" 
-               style={{ backgroundImage: 'linear-gradient(#3b82f6 1px, transparent 1px), linear-gradient(90deg, #3b82f6 1px, transparent 1px)', backgroundSize: '30px 30px' }}>
-          </div>
+              {/* Grid HUD Overlay */}
+              <div className="absolute inset-0 pointer-events-none opacity-[0.08] z-10" 
+                   style={{ backgroundImage: 'linear-gradient(rgba(59,130,246,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(59,130,246,0.1) 1px, transparent 1px)', backgroundSize: '30px 30px' }}>
+              </div>
 
-          {/* HUD Overlays */}
-          <div className="absolute top-8 left-8 flex flex-col gap-3 z-20 animate-flicker">
-            <div className="flex items-center gap-3 bg-black/70 backdrop-blur-xl px-5 py-2.5 rounded-full border border-white/10 shadow-2xl">
-              <span className={`flex h-2.5 w-2.5 rounded-full ${isProcessing ? 'bg-blue-500 animate-ping' : 'bg-red-600 animate-pulse'}`}></span>
-              <span className="text-[10px] font-black text-white uppercase tracking-[0.3em]">
-                {isProcessing ? 'SCANNING GRID NODE' : 'UPLINK STABLE'}
-              </span>
-            </div>
-            {isProcessing && (
-              <div className="flex items-center gap-2 ml-1">
-                <div className="flex gap-1.5 items-end h-4">
-                  <div className="w-1 h-2 bg-blue-500 rounded-full animate-[bounce_1s_infinite_100ms]"></div>
-                  <div className="w-1 h-4 bg-blue-500 rounded-full animate-[bounce_1s_infinite_200ms]"></div>
-                  <div className="w-1 h-3 bg-blue-500 rounded-full animate-[bounce_1s_infinite_300ms]"></div>
+              {/* Top Left: Scanning Status */}
+              <div className="absolute top-10 left-10 flex flex-col gap-4 z-20">
+                <div className="flex items-center gap-4 bg-black/40 backdrop-blur-xl px-5 py-2.5 rounded-full border border-white/10 shadow-2xl">
+                  <div className={`w-3 h-3 rounded-full ${isProcessing ? 'bg-blue-500 animate-pulse shadow-[0_0_12px_#3b82f6]' : 'bg-emerald-500 shadow-[0_0_12px_#10b981]'}`}></div>
+                  <span className="text-[10px] font-black text-white uppercase tracking-[0.2em]">
+                    {isProcessing ? 'SCANNING GRID NODE' : 'UPLINK STABLE'}
+                  </span>
                 </div>
-                <span className="text-[9px] font-black text-blue-400 uppercase tracking-[0.2em]">Analyzing...</span>
+                
+                {isProcessing && (
+                  <div className="flex items-center gap-3 px-2">
+                    <div className="flex gap-1 items-end h-3">
+                      <div className="w-0.5 bg-blue-500 animate-[bounce_0.6s_infinite_ease-in-out]"></div>
+                      <div className="w-0.5 bg-blue-500 animate-[bounce_0.6s_infinite_0.1s_ease-in-out]"></div>
+                      <div className="w-0.5 bg-blue-500 animate-[bounce_0.6s_infinite_0.2s_ease-in-out]"></div>
+                    </div>
+                    <span className="text-[10px] font-black text-blue-400 uppercase tracking-[0.25em] animate-pulse">
+                      ANALYZING...
+                    </span>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          <div className="absolute top-8 right-8 z-20">
-            <div className="bg-black/70 backdrop-blur-2xl border border-white/10 px-4 py-2 rounded-2xl text-right shadow-2xl">
-              <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1">Encrypted Link</p>
-              <p className="text-xs font-black text-blue-500 font-mono tracking-tighter uppercase leading-none">NODE_S_102</p>
-            </div>
-          </div>
+              {/* Top Right: Encrypted Link info */}
+              <div className="absolute top-10 right-10 z-20 text-right">
+                <div className="bg-black/40 backdrop-blur-xl border border-white/10 px-6 py-3 rounded-2xl shadow-2xl">
+                  <p className="text-[8px] font-black text-slate-400 uppercase tracking-[0.3em] mb-1.5">ENCRYPTED LINK</p>
+                  <p className="text-[11px] font-black text-blue-500 font-mono tracking-widest uppercase">
+                    NODE_S_{videoRef.current?.videoWidth ? '102' : 'INIT'}
+                  </p>
+                </div>
+              </div>
+              {/* Digital Grid */}
+              <div className="absolute inset-0 pointer-events-none opacity-10 animate-grid" 
+                style={{ backgroundImage: 'linear-gradient(#3b82f6 1px, transparent 1px), linear-gradient(90deg, #3b82f6 1px, transparent 1px)', backgroundSize: '30px 30px' }}>
+              </div>
 
-          {lastCount !== null && !isProcessing && (
-            <div className="absolute bottom-8 left-8 bg-blue-600/95 backdrop-blur-2xl px-6 py-4 rounded-3xl border border-white/10 shadow-[0_20px_60px_rgba(37,99,235,0.4)] z-20 flex items-center gap-4 transition-all animate-in fade-in slide-in-from-bottom-6 duration-700">
-              <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-white ring-1 ring-white/30">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-[9px] font-black text-blue-100 uppercase tracking-[0.3em] leading-none mb-1.5">Node Audit</span>
-                <span className="text-xl font-black text-white tabular-nums leading-none tracking-tight">{lastCount} Peoples</span>
-              </div>
-            </div>
+              {/* Scanning Horizontal Line */}
+              {isProcessing && (
+                <div className="absolute inset-0 pointer-events-none z-30 overflow-hidden">
+                  <div className="absolute left-0 w-full h-[1px] bg-blue-400 shadow-[0_0_15px_#3b82f6] animate-scan opacity-80"></div>
+                  <div className="absolute inset-0 bg-blue-500/5 animate-flicker"></div>
+                </div>
+              )}
+
+              {/* Bottom Info: Entity Count */}
+              {lastCount !== null && !isProcessing && (
+                <div className="absolute bottom-10 left-10 bg-blue-600/90 backdrop-blur-xl px-6 py-4 rounded-2xl border border-white/10 shadow-2xl z-20 flex items-center gap-4 animate-in fade-in slide-in-from-bottom-4">
+                  <div className="w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center text-white border border-white/10">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                  </div>
+                  <div>
+                    <span className="text-[9px] font-black text-blue-100 uppercase tracking-[0.3em] block mb-0.5 opacity-70">Grid Presence</span>
+                    <span className="text-lg font-black text-white tabular-nums tracking-tighter">{lastCount} Entities Logged</span>
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
-          {/* Vignette & Corner Decals */}
-          <div className="absolute inset-0 pointer-events-none shadow-[inset_0_0_200px_rgba(0,0,0,1)] opacity-70"></div>
-          <div className="absolute top-0 left-0 w-12 h-12 border-t-[3px] border-l-[3px] border-blue-500/40 rounded-tl-[2.5rem] pointer-events-none"></div>
-          <div className="absolute top-0 right-0 w-12 h-12 border-t-[3px] border-r-[3px] border-blue-500/40 rounded-tr-[2.5rem] pointer-events-none"></div>
-          <div className="absolute bottom-0 left-0 w-12 h-12 border-b-[3px] border-l-[3px] border-blue-500/40 rounded-bl-[2.5rem] pointer-events-none"></div>
-          <div className="absolute bottom-0 right-0 w-12 h-12 border-b-[3px] border-r-[3px] border-blue-500/40 rounded-br-[2.5rem] pointer-events-none"></div>
+          {/* Initial Sync Loader */}
+          {!isReady && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 z-40">
+               <div className="w-12 h-12 border-2 border-blue-500/10 border-t-blue-500 rounded-full animate-spin mb-6 shadow-[0_0_20px_rgba(59,130,246,0.1)]"></div>
+               <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.5em] animate-pulse">Syncing Grid Node...</span>
+            </div>
+          )}
         </>
       )}
       <canvas ref={canvasRef} className="hidden" />
+      <style>{`
+        @keyframes bounce {
+          0%, 100% { height: 4px; }
+          50% { height: 12px; }
+        }
+      `}</style>
     </div>
   );
 };

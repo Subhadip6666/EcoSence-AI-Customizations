@@ -1,4 +1,3 @@
-
 export enum RoomStatus {
   OCCUPIED = 'OCCUPIED',
   EMPTY = 'EMPTY',
@@ -23,6 +22,7 @@ export interface RoomData {
   devices: DeviceStatus[];
   imageUrl: string;
   lastUpdate: string;
+  auditMethod?: 'AI' | 'LOCAL';
 }
 
 export interface EnergyStats {

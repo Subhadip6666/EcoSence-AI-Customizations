@@ -40,9 +40,20 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onAnalyze, isAnalyzing
                  </span>
                )}
              </div>
-             <span className="text-white text-[10px] font-black tracking-widest uppercase opacity-80">
-                T: {new Date(room.lastUpdate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-             </span>
+             <div className="flex flex-col items-end gap-1">
+               {room.auditMethod && (
+                 <span className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-[0.1em] ${
+                   room.auditMethod === 'AI' 
+                     ? 'bg-blue-500/20 border-blue-500/40 text-blue-200' 
+                     : 'bg-amber-500/20 border-amber-500/40 text-amber-200'
+                 }`}>
+                   {room.auditMethod === 'AI' ? 'AI Cloud' : 'Local Edge'}
+                 </span>
+               )}
+               <span className="text-white text-[9px] font-black tracking-widest uppercase opacity-80">
+                  {new Date(room.lastUpdate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+               </span>
+             </div>
           </div>
         </div>
         {isAnalyzing && (
@@ -113,7 +124,7 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onAnalyze, isAnalyzing
             }`}
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2v20"/><path d="M2 12h20"/><path d="m16.24 7.76-8.48 8.48"/><path d="m7.76 7.76 8.48 8.48"/></svg>
-            {isLinkedToCCTV ? 'Live Capture & Scan' : 'Audit Node'}
+            {isLinkedToCCTV ? 'Capture & Verify' : 'Manual Audit'}
           </button>
         </div>
       </div>
