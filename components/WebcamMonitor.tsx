@@ -124,7 +124,7 @@ export const WebcamMonitor: React.FC<WebcamMonitorProps> = ({ isActive, isProces
             className={`w-full h-full object-cover transition-all duration-1000 grayscale ${isReady ? 'opacity-100' : 'opacity-0'} ${
               isProcessing 
                 ? 'brightness-[0.7] contrast-[1.4] blur-[2px]' 
-                : 'brightness-[0.7] contrast-[1.3]'
+                : 'brightness-[0.77] contrast-[1.3]'
             }`}
           />
           
