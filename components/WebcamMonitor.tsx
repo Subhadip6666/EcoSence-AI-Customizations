@@ -12,42 +12,63 @@ export const WebcamMonitor: React.FC<WebcamMonitorProps> = ({ isActive, isProces
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const [error, setError] = useState<{title: string, message: string, type: string} | null>(null);
+  const [error, setError] = useState<{ title: string, message: string } | null>(null);
+  const [permissionState, setPermissionState] = useState<'prompt' | 'granted' | 'denied'>('prompt');
   const [isInitializing, setIsInitializing] = useState(false);
   const [isReady, setIsReady] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
 
-  // Core initialization logic
+  const startCamera = async () => {
+    setError(null);
+    setIsInitializing(true);
+    setIsReady(false);
+
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 3840, min: 1280 },
+          height: { ideal: 2160, min: 720 },
+          frameRate: { ideal: 60, min: 30 }
+        },
+        audio: false
+      });
+
+      setStream(mediaStream);
+      setPermissionState('granted');
+    } catch (err: any) {
+      console.error("Camera access failed:", err);
+      let errorData = {
+        title: "Hardware Error",
+        message: "An unexpected error occurred while linking to the camera node."
+      };
+
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setPermissionState('denied');
+        errorData = {
+          title: "Access Restricted",
+          message: "Camera permission denied. The AI Vision system requires visual input to function. Please enable camera access in browser settings."
+        };
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        errorData = {
+          title: "Hardware Missing",
+          message: "No imaging device detected. Ensure a compatible camera is connected to the grid node."
+        };
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        errorData = {
+          title: "Node Conflict",
+          message: "The camera is currently reserved by another process. Please close other applications using the video feed."
+        };
+      }
+      
+      setError(errorData);
+    } finally {
+      setIsInitializing(false);
+    }
+  };
+
   useEffect(() => {
     if (isActive) {
-      const startCamera = async () => {
-        setError(null);
-        setIsInitializing(true);
-        setIsReady(false);
-        
-        try {
-          // Requesting ultra-high fidelity constraints for maximum detail extraction
-          const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-            video: { 
-              facingMode: 'environment',
-              width: { ideal: 3840, min: 1280 }, // Requesting 4K with 720p as baseline
-              height: { ideal: 2160, min: 720 },
-              frameRate: { ideal: 60, min: 30 }  // Requesting high frame rate for fluid HUD motion
-            }, 
-            audio: false 
-          });
-          
-          setStream(mediaStream);
-        } catch (err: any) {
-          console.error("Camera access failed:", err);
-          setError({
-            title: "Uplink Error",
-            message: err.name === 'NotAllowedError' ? "Permission denied. Check browser settings." : "Hardware not responding or busy.",
-            type: 'hardware'
-          });
-        } finally {
-          setIsInitializing(false);
-        }
-      };
       startCamera();
     } else {
       if (stream) {
@@ -59,9 +80,8 @@ export const WebcamMonitor: React.FC<WebcamMonitorProps> = ({ isActive, isProces
     return () => {
       if (stream) stream.getTracks().forEach(track => track.stop());
     };
-  }, [isActive]);
+  }, [isActive, retryCount]);
 
-  // Stream-to-Video attachment watchdog
   useEffect(() => {
     if (stream && videoRef.current) {
       videoRef.current.srcObject = stream;
@@ -69,19 +89,16 @@ export const WebcamMonitor: React.FC<WebcamMonitorProps> = ({ isActive, isProces
     }
   }, [stream]);
 
-  // Capture utility
   useEffect(() => {
     (window as any).captureCCTVFrame = () => {
       if (videoRef.current && canvasRef.current && stream && isReady) {
         const video = videoRef.current;
         const canvas = canvasRef.current;
-        // Use intrinsic video dimensions for maximum capture resolution
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext('2d', { alpha: false });
         if (ctx) {
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          // High quality JPEG for AI ingestion
           return canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
         }
       }
@@ -92,26 +109,47 @@ export const WebcamMonitor: React.FC<WebcamMonitorProps> = ({ isActive, isProces
   if (!isActive) return null;
 
   return (
-    <div className="relative w-full aspect-video bg-slate-950 rounded-[2.5rem] overflow-hidden border border-slate-800 shadow-2xl flex flex-col items-center justify-center group">
+    <div className="relative w-full aspect-video bg-[#0a0f1e] rounded-[2.5rem] overflow-hidden border border-slate-800 shadow-2xl flex flex-col items-center justify-center group">
       {(!stream || error) ? (
-        <div className="flex flex-col items-center gap-6 p-10 text-center animate-in fade-in zoom-in-95 duration-500">
-          <div className={`w-20 h-20 rounded-[1.8rem] flex items-center justify-center transition-all ${error ? 'bg-red-500/10 text-red-500' : 'bg-slate-900 text-slate-700'}`}>
-            {isInitializing ? (
-              <div className="w-8 h-8 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin"></div>
-            ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
-              </svg>
-            )}
-          </div>
-          <div className="space-y-2">
-            <h4 className="font-black uppercase tracking-widest text-[11px] text-slate-400">
-              {error ? error.title : 'Vision Initialization'}
-            </h4>
-            <p className="text-slate-600 text-[9px] font-bold max-w-[200px] leading-relaxed uppercase tracking-tighter">
-              {error ? error.message : 'Establishing high-definition visual telemetry uplink...'}
-            </p>
-          </div>
+        <div className="flex flex-col items-center gap-8 p-12 text-center animate-in fade-in zoom-in-95 duration-700 max-w-2xl">
+          {error ? (
+            <>
+              {/* Error Icon */}
+              <div className="w-24 h-24 rounded-full bg-red-500/10 flex items-center justify-center border border-red-500/20 shadow-[0_0_40px_rgba(239,68,68,0.1)]">
+                <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center border border-red-500/40">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                  </svg>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <h4 className="font-black uppercase tracking-[0.2em] text-2xl text-red-500 drop-shadow-sm">
+                  {error.title}
+                </h4>
+                <p className="text-slate-400 text-sm font-medium leading-relaxed max-w-md mx-auto">
+                  {error.message}
+                </p>
+              </div>
+
+              <button 
+                onClick={() => setRetryCount(prev => prev + 1)}
+                className="mt-4 bg-white text-slate-950 font-black uppercase tracking-[0.2em] py-4 px-12 rounded-2xl hover:bg-slate-100 transition-all shadow-xl active:scale-[0.98] flex items-center justify-center gap-3 border-b-4 border-slate-200"
+              >
+                Attempt System Re-Link
+              </button>
+            </>
+          ) : (
+            <div className="flex flex-col items-center gap-6">
+              <div className="w-20 h-20 rounded-[1.8rem] flex items-center justify-center bg-slate-900 text-slate-700">
+                <div className="w-8 h-8 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin"></div>
+              </div>
+              <div className="space-y-2">
+                <h4 className="font-black uppercase tracking-widest text-[11px] text-slate-400">Vision Initialization</h4>
+                <p className="text-slate-600 text-[9px] font-bold uppercase tracking-tighter">Establishing visual telemetry uplink...</p>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <>
@@ -175,6 +213,7 @@ export const WebcamMonitor: React.FC<WebcamMonitorProps> = ({ isActive, isProces
                   </p>
                 </div>
               </div>
+
               {/* Digital Grid */}
               <div className="absolute inset-0 pointer-events-none opacity-10 animate-grid" 
                 style={{ backgroundImage: 'linear-gradient(#3b82f6 1px, transparent 1px), linear-gradient(90deg, #3b82f6 1px, transparent 1px)', backgroundSize: '30px 30px' }}>
